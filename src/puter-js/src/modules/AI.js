@@ -1,5 +1,15 @@
 import * as utils from '../lib/utils.js';
 
+const normalizeTTSProvider = (value) => {
+    if (typeof value !== 'string') {
+        return 'aws-polly';
+    }
+    const lower = value.toLowerCase();
+    if (lower === 'openai') return 'openai';
+    if (lower === 'aws' || lower === 'polly' || lower === 'aws-polly') return 'aws-polly';
+    return value;
+};
+
 class AI{
     /**
      * Creates a new instance with the given authentication token, API origin, and app ID,
@@ -183,23 +193,43 @@ class AI{
             throw { message: 'Text parameter is required', code: 'text_required' };
         }
 
-        // Validate engine if provided
-        if (options.engine) {
-            const validEngines = ['standard', 'neural', 'long-form', 'generative'];
-            if (!validEngines.includes(options.engine)) {
-                throw { message: 'Invalid engine. Must be one of: ' + validEngines.join(', '), code: 'invalid_engine' };
-            }
+        const validEngines = ['standard', 'neural', 'long-form', 'generative'];
+        let provider = normalizeTTSProvider(options.provider);
+
+        if (options.engine && normalizeTTSProvider(options.engine) === 'openai' && !options.provider) {
+            provider = 'openai';
         }
 
-        // Set default values if not provided
-        if (!options.voice) {
-            options.voice = 'Joanna';
-        }
-        if (!options.engine) {
-            options.engine = 'standard';
-        }
-        if (!options.language) {
-            options.language = 'en-US';
+        if (provider === 'openai') {
+            if (!options.model && typeof options.engine === 'string') {
+                options.model = options.engine;
+            }
+            if (!options.voice) {
+                options.voice = 'alloy';
+            }
+            if (!options.model) {
+                options.model = 'gpt-4o-mini-tts';
+            }
+            if (!options.response_format) {
+                options.response_format = 'mp3';
+            }
+            delete options.engine;
+        } else {
+            provider = 'aws-polly';
+
+            if (options.engine && !validEngines.includes(options.engine)) {
+                throw { message: 'Invalid engine. Must be one of: ' + validEngines.join(', '), code: 'invalid_engine' };
+            }
+
+            if (!options.voice) {
+                options.voice = 'Joanna';
+            }
+            if (!options.engine) {
+                options.engine = 'standard';
+            }
+            if (!options.language) {
+                options.language = 'en-US';
+            }
         }
 
         // check input size
@@ -214,12 +244,28 @@ class AI{
                 break;
             }
         }
-    
-        return await utils.make_driver_method(['source'], 'puter-tts', 'aws-polly', 'synthesize', {
+
+        const driverName = provider === 'openai' ? 'openai-tts' : 'aws-polly';
+
+        return await utils.make_driver_method(['source'], 'puter-tts', driverName, 'synthesize', {
             responseType: 'blob',
             test_mode: testMode ?? false,
             transform: async (result) => {
-                const url = await utils.blob_to_url(result);
+                let url;
+                if (typeof result === 'string') {
+                    url = result;
+                } else if (result instanceof Blob) {
+                    url = await utils.blob_to_url(result);
+                } else if (result instanceof ArrayBuffer) {
+                    const blob = new Blob([result]);
+                    url = await utils.blob_to_url(blob);
+                } else if (result && typeof result === 'object' && typeof result.arrayBuffer === 'function') {
+                    const arrayBuffer = await result.arrayBuffer();
+                    const blob = new Blob([arrayBuffer], { type: result.type || undefined });
+                    url = await utils.blob_to_url(blob);
+                } else {
+                    throw { message: 'Unexpected audio response format', code: 'invalid_audio_response' };
+                }
                 const audio = new Audio(url);
                 audio.toString = () => url;
                 audio.valueOf = () => url;
@@ -228,16 +274,105 @@ class AI{
         }).call(this, options);
     }
 
+    speech2txt = async (...args) => {
+        const MAX_INPUT_SIZE = 25 * 1024 * 1024;
+        if ( !args || !args.length ) {
+            throw ({ message: 'Arguments are required', code: 'arguments_required' });
+        }
+
+        const normalizeSource = async (value) => {
+            if ( value instanceof Blob ) {
+                return await utils.blobToDataUri(value);
+            }
+            return value;
+        };
+
+        let options = {};
+        let testMode = false;
+
+        const primary = args[0];
+        if ( primary && typeof primary === 'object' && !Array.isArray(primary) && !(primary instanceof Blob) ) {
+            options = { ...primary };
+        } else {
+            options.file = await normalizeSource(primary);
+        }
+
+        if ( args[1] && typeof args[1] === 'object' && !Array.isArray(args[1]) && !(args[1] instanceof Blob) ) {
+            options = { ...options, ...args[1] };
+        } else if ( typeof args[1] === 'boolean' ) {
+            testMode = args[1];
+        }
+
+        if ( typeof args[2] === 'boolean' ) {
+            testMode = args[2];
+        }
+
+        if ( options.audio ) {
+            options.file = await normalizeSource(options.audio);
+            delete options.audio;
+        }
+
+        if ( options.file instanceof Blob ) {
+            options.file = await normalizeSource(options.file);
+        }
+
+        if ( !options.file ) {
+            throw { message: 'Audio input is required', code: 'audio_required' };
+        }
+
+        if ( typeof options.file === 'string' && options.file.startsWith('data:') ) {
+            const base64 = options.file.split(',')[1] || '';
+            const padding = base64.endsWith('==') ? 2 : (base64.endsWith('=') ? 1 : 0);
+            const byteLength = Math.floor((base64.length * 3) / 4) - padding;
+            if ( byteLength > MAX_INPUT_SIZE ) {
+                throw { message: 'Input size cannot be larger than 25 MB', code: 'input_too_large' };
+            }
+        }
+
+        const driverMethod = options.translate ? 'translate' : 'transcribe';
+        const driverArgs = { ...options };
+        delete driverArgs.translate;
+
+        const responseFormat = driverArgs.response_format;
+
+        return await utils.make_driver_method([], 'puter-speech2txt', 'openai-speech2txt', driverMethod, {
+            test_mode: testMode,
+            transform: async (result) => {
+                if ( responseFormat === 'text' && result && typeof result === 'object' && typeof result.text === 'string' ) {
+                    return result.text;
+                }
+                return result;
+            },
+        }).call(this, driverArgs);
+    }
+
     // Add new methods for TTS engine management
     txt2speech = Object.assign(this.txt2speech, {
         /**
          * List available TTS engines with pricing information
          * @returns {Promise<Array>} Array of available engines
          */
-        listEngines: async () => {
-            return await utils.make_driver_method(['source'], 'puter-tts', 'aws-polly', 'list_engines', {
+        listEngines: async (options = {}) => {
+            let provider = 'aws-polly';
+            let params = {};
+
+            if (typeof options === 'string') {
+                provider = normalizeTTSProvider(options);
+            } else if (options && typeof options === 'object') {
+                provider = normalizeTTSProvider(options.provider) || provider;
+                params = { ...options };
+                delete params.provider;
+            }
+
+            if (provider === 'openai') {
+                params.provider = 'openai';
+            }
+
+            const driverName = provider === 'openai' ? 'openai-tts' : 'aws-polly';
+
+            return await utils.make_driver_method(['source'], 'puter-tts', driverName, 'list_engines', {
                 responseType: 'text',
-            }).call(this, {});
+            }).call(this, params);
         },
 
         /**
@@ -245,13 +380,26 @@ class AI{
          * @param {string} [engine] - Optional engine filter
          * @returns {Promise<Array>} Array of available voices
          */
-        listVoices: async (engine) => {
-            const params = {};
-            if (engine) {
-                params.engine = engine;
+        listVoices: async (options) => {
+            let provider = 'aws-polly';
+            let params = {};
+
+            if (typeof options === 'string') {
+                params.engine = options;
+            } else if (options && typeof options === 'object') {
+                provider = normalizeTTSProvider(options.provider) || provider;
+                params = { ...options };
+                delete params.provider;
             }
 
-            return utils.make_driver_method(['source'], 'puter-tts', 'aws-polly', 'list_voices', {
+            if (provider === 'openai') {
+                params.provider = 'openai';
+                delete params.engine;
+            }
+
+            const driverName = provider === 'openai' ? 'openai-tts' : 'aws-polly';
+
+            return utils.make_driver_method(['source'], 'puter-tts', driverName, 'list_voices', {
                 responseType: 'text',
             }).call(this, params);
         }
@@ -672,6 +820,78 @@ class AI{
                 img.toString = () => img.src;
                 img.valueOf = () => img.src;
                 return img;
+            }
+        }).call(this, options);
+    }
+
+    txt2vid = async (...args) => {
+        let options = {};
+        let testMode = false;
+
+        if(!args){
+            throw({message: 'Arguments are required', code: 'arguments_required'});
+        }
+
+        if (typeof args[0] === 'string') {
+            options = { prompt: args[0] };
+        }
+
+        if (typeof args[1] === 'boolean' && args[1] === true) {
+            testMode = true;
+        }
+
+        if (typeof args[0] === 'string' && typeof args[1] === "object") {
+            options = args[1];
+            options.prompt = args[0];
+        }
+
+        if (typeof args[0] === 'object') {
+            options = args[0];
+        }
+
+        if (!options.prompt) {
+            throw({message: 'Prompt parameter is required', code: 'prompt_required'});
+        }
+
+        if (!options.model) {
+            options.model = 'sora-2';
+        }
+
+        if (options.duration !== undefined && options.seconds === undefined) {
+            options.seconds = options.duration;
+        }
+
+        return await utils.make_driver_method(['prompt'], 'puter-video-generation', 'openai-video-generation', 'generate', {
+            responseType: 'blob',
+            test_mode: testMode ?? false,
+            transform: async result => {
+                let sourceUrl = null;
+                let mimeType = null;
+                if (result instanceof Blob) {
+                    sourceUrl = await utils.blob_to_url(result);
+                    mimeType = result.type || 'video/mp4';
+                } else if (typeof result === 'string') {
+                    sourceUrl = result;
+                } else if (result && typeof result === 'object') {
+                    sourceUrl = result.asset_url || result.url || result.href || null;
+                    mimeType = result.mime_type || result.content_type || null;
+                }
+
+                if (!sourceUrl) {
+                    return result;
+                }
+
+                const video = document.createElement('video');
+                video.src = sourceUrl;
+                video.controls = true;
+                video.preload = 'metadata';
+                if (mimeType) {
+                    video.setAttribute('data-mime-type', mimeType);
+                }
+                video.setAttribute('data-source', sourceUrl);
+                video.toString = () => video.src;
+                video.valueOf = () => video.src;
+                return video;
             }
         }).call(this, options);
     }

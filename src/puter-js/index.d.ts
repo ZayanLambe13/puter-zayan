@@ -32,23 +32,43 @@ declare class Puter {
 
 // AI Module
 interface AI {
-    chat(prompt: string, options?: ChatOptions): Promise<ChatResponse>;
-    chat(prompt: string, testMode?: boolean, options?: ChatOptions): Promise<ChatResponse>;
-    chat(prompt: string, imageURL?: string, testMode?: boolean, options?: ChatOptions): Promise<ChatResponse>;
-    chat(prompt: string, imageURLArray?: string[], testMode?: boolean, options?: ChatOptions): Promise<ChatResponse>;
-    chat(messages: ChatMessage[], testMode?: boolean, options?: ChatOptions): Promise<ChatResponse>;
+    // Streaming overloads
+    chat(prompt: string, options: StreamingChatOptions): AsyncIterable<ChatResponseChunk>;
+    chat(prompt: string, testMode: boolean, options: StreamingChatOptions): AsyncIterable<ChatResponseChunk>;
+    chat(prompt: string, imageURL: string, testMode: boolean, options: StreamingChatOptions): AsyncIterable<ChatResponseChunk>;
+    chat(prompt: string, imageURLArray: string[], testMode: boolean, options: StreamingChatOptions): AsyncIterable<ChatResponseChunk>;
+    chat(messages: ChatMessage[], testMode: boolean, options: StreamingChatOptions): AsyncIterable<ChatResponseChunk>;
+
+    // Non-streaming overloads
+    chat(prompt: string, options?: NonStreamingChatOptions): Promise<ChatResponse>;
+    chat(prompt: string, testMode?: boolean, options?: NonStreamingChatOptions): Promise<ChatResponse>;
+    chat(prompt: string, imageURL?: string, testMode?: boolean, options?: NonStreamingChatOptions): Promise<ChatResponse>;
+    chat(prompt: string, imageURLArray?: string[], testMode?: boolean, options?: NonStreamingChatOptions): Promise<ChatResponse>;
+    chat(messages: ChatMessage[], testMode?: boolean, options?: NonStreamingChatOptions): Promise<ChatResponse>;
 
     img2txt(image: string | File | Blob, testMode?: boolean): Promise<string>;
 
     txt2img(prompt: string, testMode?: boolean): Promise<HTMLImageElement>;
     txt2img(prompt: string, options?: Txt2ImgOptions): Promise<HTMLImageElement>;
 
+    txt2vid(prompt: string, testMode?: boolean): Promise<HTMLVideoElement>;
+    txt2vid(prompt: string, options?: Txt2VidOptions): Promise<HTMLVideoElement>;
+
     txt2speech(text: string): Promise<HTMLAudioElement>;
     txt2speech(text: string, options?: Txt2SpeechOptions): Promise<HTMLAudioElement>;
     txt2speech(text: string, language?: string): Promise<HTMLAudioElement>;
     txt2speech(text: string, language?: string, voice?: string): Promise<HTMLAudioElement>;
     txt2speech(text: string, language?: string, voice?: string, engine?: string): Promise<HTMLAudioElement>;
+
+    speech2txt(source: string | File | Blob): Promise<string | Speech2TxtResult>;
+    speech2txt(source: string | File | Blob, options?: Speech2TxtOptions): Promise<string | Speech2TxtResult>;
+    speech2txt(options: Speech2TxtOptions): Promise<string | Speech2TxtResult>;
+    speech2txt(source: string | File | Blob, testMode?: boolean): Promise<string | Speech2TxtResult>;
+    speech2txt(source: Speech2TxtOptions, testMode?: boolean): Promise<string | Speech2TxtResult>;
 }
+
+type StreamingChatOptions = Omit<ChatOptions, "stream"> & { stream: true };
+type NonStreamingChatOptions = Omit<ChatOptions, "stream"> & { stream?: false | undefined };
 
 interface ChatOptions {
     model?: string;
@@ -97,16 +117,59 @@ interface ToolCall {
 }
 
 interface Txt2ImgOptions {
-    model?: 'gpt-image-1' | 'gemini-2.5-flash-image-preview' | 'dall-e-3';
+    model?: 'gpt-image-1' | 'gpt-image-1-mini' | 'gemini-2.5-flash-image-preview' | 'dall-e-3';
     quality?: 'high' | 'medium' | 'low' | 'hd' | 'standard';
     input_image?: string;
     input_image_mime_type?: string;
 }
 
+interface Txt2VidOptions {
+    prompt?: string;
+    model?: 'sora-2' | 'sora-2-pro';
+    duration?: 4 | 8 | 12;
+    seconds?: 4 | 8 | 12;
+    size?: '720x1280' | '1280x720' | '1024x1792' | '1792x1024';
+    resolution?: '720x1280' | '1280x720' | '1024x1792' | '1792x1024';
+}
+
 interface Txt2SpeechOptions {
     language?: string;
     voice?: string;
-    engine?: 'standard' | 'neural' | 'generative';
+    engine?: 'standard' | 'neural' | 'long-form' | 'generative' | string;
+    provider?: 'aws-polly' | 'openai' | string;
+    model?: 'gpt-4o-mini-tts' | 'tts-1' | 'tts-1-hd' | string;
+    response_format?: 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm' | string;
+    instructions?: string;
+}
+
+interface Speech2TxtOptions {
+    file?: string | File | Blob;
+    audio?: string | File | Blob;
+    model?: 'gpt-4o-mini-transcribe' | 'gpt-4o-transcribe' | 'gpt-4o-transcribe-diarize' | 'whisper-1' | string;
+    response_format?: 'json' | 'text' | 'diarized_json' | 'srt' | 'verbose_json' | 'vtt' | string;
+    language?: string;
+    prompt?: string;
+    temperature?: number;
+    logprobs?: boolean;
+    timestamp_granularities?: string[];
+    translate?: boolean;
+    stream?: boolean;
+    chunking_strategy?: string;
+    known_speaker_names?: string[];
+    known_speaker_references?: string[];
+    extra_body?: Record<string, unknown>;
+}
+
+interface Speech2TxtResult {
+    text?: string;
+    language?: string;
+    segments?: Array<Record<string, unknown>>;
+    [key: string]: any;
+}
+
+interface ChatResponseChunk {
+    text?: string;
+    [key: string]: any;
 }
 
 // Apps Module
@@ -130,6 +193,7 @@ interface CreateAppOptions {
     icon?: string;
     maximizeOnStart?: boolean;
     filetypeAssociations?: string[];
+    dedupeName?: boolean;
 }
 
 interface GetAppOptions {
@@ -172,12 +236,41 @@ interface Auth {
     signOut(): void;
     isSignedIn(): boolean;
     getUser(): Promise<User>;
+    getMonthlyUsage(): Promise<MonthlyUsage>;
+    getDetailedAppUsage(appId: string): Promise<DetailedAppUsage>;
 }
 
 interface User {
     uuid: string;
     username: string;
     email_confirmed: boolean;
+}
+
+interface AllowanceInfo {
+    monthUsageAllowance: number;
+    remaining: number;
+}
+
+interface AppUsage {
+    count: number;
+    total: number;
+}
+
+interface APIUsage {
+    cost: number;
+    count: number;
+    units: number;
+}
+
+interface MonthlyUsage {
+    allowanceInfo: AllowanceInfo;
+    appTotals: Record<string, AppUsage>;
+    usage: Record<string, APIUsage>;
+}
+
+interface DetailedAppUsage {
+    total: number;
+    [key: string]: APIUsage;
 }
 
 // Drivers Module
@@ -198,7 +291,7 @@ interface FileSystem {
     rename(path: string, newName: string): Promise<FSItem>;
     space(): Promise<SpaceInfo>;
     stat(path: string): Promise<FSItem>;
-    upload(items: FileList | File[] | Blob[], dirPath?: string, options?: object): Promise<FSItem[]>;
+    upload(items: FileList | File[] | Blob[], dirPath?: string, options?: UploadOptions): Promise<FSItem[]>;
     write(path: string, data?: string | File | Blob, options?: WriteOptions): Promise<FSItem>;
 }
 
@@ -237,6 +330,12 @@ interface WriteOptions {
     overwrite?: boolean;
     dedupeName?: boolean;
     createMissingParents?: boolean;
+}
+
+interface UploadOptions {
+    overwrite?: boolean;
+    dedupeName?: boolean;
+    name?: string;
 }
 
 interface SpaceInfo {
@@ -281,7 +380,9 @@ interface KV {
     set(key: string, value: string | number | boolean | object | any[]): Promise<boolean>;
     get(key: string): Promise<any>;
     del(key: string): Promise<boolean>;
+    incr(key: string, pathAndAmount: { [key: string]: number }): Promise<number>;
     incr(key: string, amount?: number): Promise<number>;
+    decr(key: string, pathAndAmount: { [key: string]: number }): Promise<number>;
     decr(key: string, amount?: number): Promise<number>;
     list(pattern?: string, returnValues?: boolean): Promise<string[] | KVPair[]>;
     list(returnValues?: boolean): Promise<string[] | KVPair[]>;
@@ -493,4 +594,3 @@ export {
     WorkerExecOptions,
     WorkerInfo, Workers, WriteOptions
 };
-

@@ -1,6 +1,6 @@
+import path from "../../../lib/path.js";
 import * as utils from '../../../lib/utils.js';
 import getAbsolutePathForApp from '../utils/getAbsolutePathForApp.js';
-import path from "../../../lib/path.js"
 
 const mkdir = function (...args) {
     let options = {};
@@ -53,9 +53,6 @@ const mkdir = function (...args) {
             original_client_socket_id: this.socket.id,
             create_missing_parents: (options.recursive || options.createMissingParents) ?? false,
         }));
-
-        // todo: EXTREMELY NAIVE CACHE PURGE
-        puter._cache.flushall();
     })
 }
 

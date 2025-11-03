@@ -34,37 +34,6 @@ import item_icon from '../helpers/item_icon.js';
 
 const el_body = document.getElementsByTagName('body')[0];
 
-// Function to get snap dimensions and positions based on taskbar position
-function getSnapDimensions() {
-    const taskbar_position = window.taskbar_position || 'bottom';
-    
-    let available_width, available_height, start_x, start_y;
-    
-    if (taskbar_position === 'left') {
-        available_width = window.innerWidth - window.taskbar_height;
-        available_height = window.innerHeight - window.toolbar_height;
-        start_x = window.taskbar_height;
-        start_y = window.toolbar_height;
-    } else if (taskbar_position === 'right') {
-        available_width = window.innerWidth - window.taskbar_height;
-        available_height = window.innerHeight - window.toolbar_height;
-        start_x = 0;
-        start_y = window.toolbar_height;
-    } else { // bottom (default)
-        available_width = window.innerWidth;
-        available_height = window.innerHeight - window.toolbar_height - window.taskbar_height;
-        start_x = 0;
-        start_y = window.toolbar_height;
-    }
-    
-    return {
-        available_width,
-        available_height,
-        start_x,
-        start_y
-    };
-}
-
 async function UIWindow(options) {
     const win_id = window.global_element_id++;
     window.last_window_zindex++;
@@ -77,7 +46,7 @@ async function UIWindow(options) {
         options.dominant = true;
  
     // we don't want to increment window_counter for dominant windows
-    if(!options.dominant)
+    if(!options.dominant && !options.is_panel)
         window.window_counter++;
 
     // add this window's id to the window_stack
@@ -152,6 +121,9 @@ async function UIWindow(options) {
 
     options.is_visible = options.is_visible ?? true;
 
+    // used for files opened via direct url
+    options.custom_path = options.custom_path ?? null;
+
     // if only one instance is allowed, bring focus to the window that is already open
     if(options.single_instance && options.app !== ''){
         let $already_open_window =  $(`.window[data-app="${html_encode(options.app)}"]`);
@@ -162,16 +134,18 @@ async function UIWindow(options) {
     }
 
     // left
+    let desktop_width = window.innerWidth - ( is_panel_open() ? PANEL_WIDTH : 0);
     if(!options.dominant && !options.center){
-        options.left = options.left ?? ((window.innerWidth/2 - options.width/2) +(window.window_counter-1) % 10 * 30) + 'px';
+        options.left = options.left ?? ((desktop_width/2 - options.width/2) +(window.window_counter-1) % 10 * 30) + 'px';
     }else if(!options.dominant && options.center){
-        options.left = options.left ?? ((window.innerWidth/2 - options.width/2)) + 'px';
+        options.left = options.left ?? ((desktop_width/2 - options.width/2)) + 'px';
     }
     else if(options.dominant){
-        options.left = (window.innerWidth/2 - options.width/2) + 'px';
+        options.left = (desktop_width/2 - options.width/2) + 'px';
     }   
-    else
-        options.left = options.left ?? ((window.innerWidth/2 - options.width/2) + 'px');
+    else{
+        options.left = options.left ?? ((desktop_width/2 - options.width/2) + 'px');
+    }
  
     // top
     if(!options.dominant && !options.center){
@@ -219,6 +193,32 @@ async function UIWindow(options) {
         if(user_set_url_params.length > 0)
             user_set_url_params = '?'+ user_set_url_params.join('&');
     }
+
+    // --------------------------------------------------------
+    // Panel
+    // --------------------------------------------------------
+    if(options.is_panel){
+        options.width = PANEL_WIDTH;
+        options.has_head = false;
+        options.show_in_taskbar = false;
+        options.is_resizable = false;
+        options.left = (window.innerWidth - options.width) + 'px';
+        options.width = options.width + 'px';
+        options.height = '100%';
+        options.top = 0;
+        options.right = '0 !important';
+        options.border_radius = '0px';
+        options.border = 'none';
+        options.box_shadow = 'none';
+        options.background_color = 'transparent';
+        options.is_visible = false;
+        options.position = 'absolute !important';
+        options.left = 'auto !important';
+
+        // panel is not visible by default
+        options.is_visible = false;
+    }
+
     h += `<div class="window window-active 
                         ${options.app === 'explorer' ? 'window-explorer' : ''}
                         ${options.cover_page ? 'window-cover-page' : ''}
@@ -255,12 +255,18 @@ async function UIWindow(options) {
                 data-sort_order ="${options.sort_order ?? 'asc'}"
                 data-multiselectable = "${options.selectable_body}"
                 data-update_window_url = "${options.update_window_url && options.is_visible}"
+                data-custom_path = "${html_encode(options.custom_path)}"
                 data-user_set_url_params = "${html_encode(user_set_url_params)}"
                 data-initial_zindex = "${zindex}"
+                data-is_panel ="${options.is_panel ? 1 : 0}"
+                data-is_visible ="${options.is_visible ? 1 : 0}"
                 style=" z-index: ${zindex}; 
+                        ${options.right !== undefined ? 'right: ' + html_encode(options.right) +'; ':''}
+                        ${options.left !== undefined ? 'left: ' + html_encode(options.left) +'; ':''}
                         ${options.width !== undefined ? 'width: ' + html_encode(options.width) +'; ':''}
                         ${options.height !== undefined ? 'height: ' + html_encode(options.height) +'; ':''}
                         ${options.border_radius !== undefined ? 'border-radius: ' + html_encode(options.border_radius) +'; ':''}
+                        ${options.position !== undefined ? 'position: ' + html_encode(options.position) +'; ':''}
                     " 
                 >`;
         // window mask
@@ -368,7 +374,7 @@ async function UIWindow(options) {
                 style="${!options.has_head ? ' height: 100%;' : ''}">`;
             // iframe, for apps
             if(options.iframe_url || options.iframe_srcdoc){
-                let allow_str = `camera; encrypted-media; gamepad; display-capture; geolocation; gyroscope; microphone; midi; clipboard-read; clipboard-write; fullscreen; web-share; file-system-handle; local-storage; downloads;`;
+                let allow_str = `picture-in-picture; document-picture-in-picture; camera; encrypted-media; gamepad; display-capture; geolocation; gyroscope; microphone; midi; clipboard-read; clipboard-write; fullscreen; web-share; file-system-handle; local-storage; downloads;`;
                 if(window.co_isolation_enabled)
                     allow_str += ' cross-origin-isolated;';
                 // <iframe>
@@ -3132,7 +3138,7 @@ window.update_window_path = async function(el_window, target_path){
         // system directories with custom icons and predefined names
         if(target_path === window.desktop_path){
             $(el_window).find('.window-head-icon').attr('src', window.icons['folder-desktop.svg']);
-            $(el_window).find('.window-head-title').text('Desktop')
+            $(el_window).find('.window-head-title').text(i18n('desktop'))
         }else if (target_path === window.home_path){
             $(el_window).find('.window-head-icon').attr('src', window.icons['folder-home.svg']);
             $(el_window).find('.window-head-title').text(i18n('home'))
@@ -3141,13 +3147,13 @@ window.update_window_path = async function(el_window, target_path){
             $(el_window).find('.window-head-title').text(i18n('documents'))
         }else if (target_path === window.public_path){
             $(el_window).find('.window-head-icon').attr('src', window.icons['folder-public.svg']);
-            $(el_window).find('.window-head-title').text(i18n('window_title_public'))
+            $(el_window).find('.window-head-title').text(i18n('public'))
         }else if (target_path === window.videos_path){
             $(el_window).find('.window-head-icon').attr('src', window.icons['folder-videos.svg']);
-            $(el_window).find('.window-head-title').text(i18n('window_title_videos'))
+            $(el_window).find('.window-head-title').text(i18n('videos'))
         }else if (target_path === window.pictures_path){
             $(el_window).find('.window-head-icon').attr('src', window.icons['folder-pictures.svg']);
-            $(el_window).find('.window-head-title').text(i18n('window_title_pictures'))
+            $(el_window).find('.window-head-title').text(i18n('pictures'))
         }// root folder of a shared user?
         else if((target_path.split('/').length - 1) === 1 && target_path !== '/'+window.user.username)
             $(el_window).find('.window-head-icon').attr('src', window.icons['shared.svg']);
@@ -3169,9 +3175,21 @@ window.update_window_path = async function(el_window, target_path){
                 $(el_window).attr('data-sort_order', fsentry.sort_order ?? 'asc');
                 $(el_window).attr('data-layout', fsentry.layout ?? 'icons');
                 $(el_window_item_container).attr('data-uid', fsentry.id);
-                // title
+                // title - use i18n for system directories
                 if (target_path === window.home_path)
                     $(el_window).find('.window-head-title').text(i18n('home'))
+                else if (target_path === window.desktop_path)
+                    $(el_window).find('.window-head-title').text(i18n('desktop'))
+                else if (target_path === window.docs_path || target_path === window.documents_path)
+                    $(el_window).find('.window-head-title').text(i18n('documents'))
+                else if (target_path === window.pictures_path)
+                    $(el_window).find('.window-head-title').text(i18n('pictures'))
+                else if (target_path === window.videos_path)
+                    $(el_window).find('.window-head-title').text(i18n('videos'))
+                else if (target_path === window.public_path)
+                    $(el_window).find('.window-head-title').text(i18n('public'))
+                else if (target_path === window.trash_path)
+                    $(el_window).find('.window-head-title').text(i18n('trash'))
                 else
                     $(el_window).find('.window-head-title').text(fsentry.name);
                 // data-name
@@ -3580,6 +3598,44 @@ window.update_window_layout = function(el_window, layout){
     }
 }
 
+$.fn.makeWindowVisible = function(options){
+    $(this).each(async function() {
+        if($(this).hasClass('window')){
+            $(this).show();
+            $(this).focusWindow();
+
+            $(this).attr({
+                'data-is_visible': '1',
+            });
+
+            // if sidepanel, shift desktop toolbar to the left 
+            if($(this).attr('data-is_panel') === '1'){
+                $('.toolbar').css('left', `calc(50% - ${window.PANEL_WIDTH/2}px)`);
+                $('.taskbar.taskbar-position-bottom').css('left', `calc(50% - ${window.PANEL_WIDTH/2}px)`);
+                $('.window[data-is_panel="0"]').css('transform', `translateX(-${window.PANEL_WIDTH/2}px)`);
+            }
+        }
+    })
+}
+
+$.fn.makeWindowInvisible = async function(options) {
+    $(this).each(async function() {
+        if($(this).hasClass('window')){
+            $(this).hide();
+            $(this).attr({
+                'data-is_visible': '0',
+            });
+            // if sidepanel, shift desktop toolbar to the right
+            if($(this).attr('data-is_panel') === '1'){
+                $('.toolbar').css('left', `calc(50%)`);
+                $('.taskbar.taskbar-position-bottom').css('left', `calc(50%)`);
+                $('.window[data-is_panel="0"]').css('transform', `translateX(0px)`);
+                // update taskbar position
+            }
+        }
+    })
+}
+
 $.fn.showWindow = async function(options) {
     $(this).each(async function() {
         if($(this).hasClass('window')){
@@ -3595,7 +3651,7 @@ $.fn.showWindow = async function(options) {
             $(el_window).css('z-index', ++window.last_window_zindex);
 
             $(el_window).attr({
-                'data-is_minimized': true, 
+                'data-is_minimized': false, 
             })
 
             setTimeout(() => {
@@ -3690,7 +3746,18 @@ $.fn.focusWindow = function(event) {
         //change window URL
         const update_window_url = $(this).attr('data-update_window_url');
         const url_app_name = $(this).attr('data-app_pseudonym') || $(this).attr('data-app');
-        if(update_window_url === 'true' || update_window_url === null){
+        let custom_path = $(this).attr('data-custom_path');
+
+        if (custom_path && custom_path !== ''){
+            if(update_window_url === 'true' || update_window_url === null){
+                if (!custom_path.startsWith('/')) {
+                    custom_path = '/' + custom_path;
+                } 
+                window.history.replaceState({window_id: $(this).attr('data-id')}, '', custom_path);
+                document.title = $(this).attr('data-name');
+            }
+        }
+        else if(update_window_url === 'true' || update_window_url === null){
             window.history.replaceState({window_id: $(this).attr('data-id')}, '', '/app/'+url_app_name+$(this).attr('data-user_set_url_params'));
             document.title = $(this).attr('data-name');
         }
@@ -3897,6 +3964,100 @@ async function saveSidebarOrder(order) {
     } catch(err) {
         console.error('Error saving sidebar order:', err);
     }
+}
+
+// Function to update maximized window positioning based on taskbar position
+window.update_maximized_window_for_taskbar = function(el_window) {
+    const position = window.taskbar_position || 'bottom';
+    
+    // Handle fullpage mode differently
+    if (window.is_fullpage_mode) {
+        $(el_window).css({
+            'top': window.toolbar_height + 'px',
+            'left': '0',
+            'width': '100%',
+            'height': `calc(100% - ${window.toolbar_height}px)`,
+        });
+        return;
+    }
+    
+    if (position === 'bottom') {
+        let height = window.innerHeight - window.taskbar_height - window.toolbar_height - 6;
+        let width = '100%';
+
+        // any open panels?
+        if(is_panel_open()){
+            width = window.innerWidth - PANEL_WIDTH - 2;
+        }
+
+        $(el_window).css({
+            'top': window.toolbar_height + 'px',
+            'left': '0',
+            'width': width,
+            'height': height + 'px',
+        });
+    } else if (position === 'left') {
+        let width = window.innerWidth - window.taskbar_height - 1;
+
+        // any open panels?
+        if(is_panel_open()){
+            width = `calc(100% - ${window.taskbar_height + 1}px - ${PANEL_WIDTH}px - 1px)`;
+        }
+
+        $(el_window).css({
+            'top': window.toolbar_height + 'px',
+            'left': window.taskbar_height + 1 + 'px',
+            'width': width,
+            'height': `calc(100% - ${window.toolbar_height}px)`,
+        });
+    } else if (position === 'right') {
+        $(el_window).css({
+            'top': window.toolbar_height + 'px',
+            'left': '0',
+            'width': `calc(100% - ${window.taskbar_height + 1}px)`,
+            'height': `calc(100% - ${window.toolbar_height}px)`,
+        });
+    }
+};
+
+// Function to get snap dimensions and positions based on taskbar position
+function getSnapDimensions() {
+    const taskbar_position = window.taskbar_position || 'bottom';
+    
+    let available_width, available_height, start_x, start_y;
+    
+    if (taskbar_position === 'left') {
+        available_width = window.innerWidth - window.taskbar_height;
+        available_height = window.innerHeight - window.toolbar_height;
+        start_x = window.taskbar_height;
+        start_y = window.toolbar_height;
+    } else if (taskbar_position === 'right') {
+        available_width = window.innerWidth - window.taskbar_height;
+        available_height = window.innerHeight - window.toolbar_height;
+        start_x = 0;
+        start_y = window.toolbar_height;
+    } else { // bottom (default)
+        available_width = window.innerWidth;
+        available_height = window.innerHeight - window.toolbar_height - window.taskbar_height;
+        start_x = 0;
+        start_y = window.toolbar_height;
+    }
+    
+    // Adjust for open panel
+    if (is_panel_open()) {
+        available_width = available_width - PANEL_WIDTH;
+    }
+    
+    return {
+        available_width,
+        available_height,
+        start_x,
+        start_y
+    };
+}
+
+window.is_panel_open = function(){
+    return $('.window[data-is_panel="1"][data-is_visible="1"]').length > 0;
 }
 
 export default UIWindow;

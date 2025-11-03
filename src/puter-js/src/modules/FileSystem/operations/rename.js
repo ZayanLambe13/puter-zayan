@@ -50,8 +50,7 @@ const rename = function (...args) {
         }
         
         xhr.send(JSON.stringify(dataToSend));
-        // todo: EXTREMELY NAIVE CACHE PURGE
-        puter._cache.flushall();
+
     })
 }
 

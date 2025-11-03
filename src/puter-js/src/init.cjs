@@ -7,7 +7,10 @@ const { resolve } = require('node:path');
  * @returns {import('../index').puter} The `puter` object from puter.js
  */
 const init = (authToken) => {
-    const goodContext = {};
+    const goodContext = {
+        PUTER_API_ORIGIN: globalThis.PUTER_API_ORIGIN,
+        PUTER_ORIGIN: globalThis.PUTER_ORIGIN,
+    };
     Object.getOwnPropertyNames(globalThis).forEach(name => {
         try {
             goodContext[name] = globalThis[name];
@@ -16,7 +19,7 @@ const init = (authToken) => {
         }
     });
     goodContext.globalThis = goodContext;
-    const code = readFileSync(`${resolve(__filename, '..')}/../dist/puter.js`, 'utf8');
+    const code = readFileSync(`${resolve(__filename, '..')}/../dist/puter.cjs`, 'utf8');
     const context = vm.createContext(goodContext);
     vm.runInNewContext(code, context);
     if ( authToken ) {

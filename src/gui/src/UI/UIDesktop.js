@@ -62,16 +62,6 @@ async function UIDesktop(options) {
     // Add this near the very beginning of the UIDesktop function
     window.desktop_icons_hidden = false; // Set default value immediately
 
-    // Initialize the preference early
-    puter.kv.get('desktop_icons_hidden').then(async (val) => {
-        window.desktop_icons_hidden = val === 'true';
-
-        // Apply the setting immediately if needed
-        if (window.desktop_icons_hidden) {
-            hideDesktopIcons();
-        }
-    });
-
     // Initialize toolbar auto-hide preference
     window.toolbar_auto_hide_enabled = true; // Set default value
 
@@ -80,31 +70,6 @@ async function UIDesktop(options) {
     if(toolbar_auto_hide_enabled_val === 'false' || toolbar_auto_hide_enabled_val === false){
         window.toolbar_auto_hide_enabled = false;
     }
-
-    // Modify the hide/show functions to use CSS rules that will apply to all icons, including future ones
-    window.hideDesktopIcons = function () {
-        // Add a CSS class to the desktop container that will hide all child icons
-        $('.desktop.item-container').addClass('desktop-icons-hidden');
-    };
-
-    window.showDesktopIcons = function () {
-        // Remove the CSS class to show all icons
-        $('.desktop.item-container').removeClass('desktop-icons-hidden');
-    };
-
-    // Add this function to the global scope
-    window.toggleDesktopIcons = function () {
-        window.desktop_icons_hidden = !window.desktop_icons_hidden;
-
-        if (window.desktop_icons_hidden) {
-            hideDesktopIcons();
-        } else {
-            showDesktopIcons();
-        }
-
-        // Save preference
-        puter.kv.set('desktop_icons_hidden', window.desktop_icons_hidden.toString());
-    };
 
     // Give Camera and Recorder write permissions to Desktop
     puter.kv.get('has_set_default_app_user_permissions').then(async (user_permissions) => {
@@ -707,6 +672,11 @@ async function UIDesktop(options) {
                 data-sort_order="${!options.desktop_fsentry.sort_order ? 'asc' : options.desktop_fsentry.sort_order}" 
                 data-path="${html_encode(window.desktop_path)}"
             >`;
+
+            // show AI button
+            if(window.user.email_confirmed){
+                h += `<div class="btn-show-ai"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles-icon lucide-sparkles"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/></svg></div>`;
+            }
     h += `</div>`;
 
     // Get window sidebar width
@@ -751,6 +721,16 @@ async function UIDesktop(options) {
     // Set desktop height based on taskbar height
     $('.desktop').css('height', `calc(100vh - ${window.taskbar_height + window.toolbar_height}px)`)
 
+    // Initialize the preference early
+    puter.kv.get('desktop_icons_hidden').then(async (val) => {
+        window.desktop_icons_hidden = (val === 'true' || val === true);
+
+        // Apply the setting immediately if needed
+        if (window.desktop_icons_hidden) {
+            hideDesktopIcons();
+        }
+    });
+
     // ---------------------------------------------------------------
     // Taskbar
     // ---------------------------------------------------------------
@@ -763,6 +743,7 @@ async function UIDesktop(options) {
 
     window.active_element = el_desktop;
     window.active_item_container = el_desktop;
+
     // --------------------------------------------------------
     // Dragster
     // Allow dragging of local files onto desktop.
@@ -860,6 +841,7 @@ async function UIDesktop(options) {
         if (event.target === el_desktop) {
             event.preventDefault();
             UIContextMenu({
+                position: event.type === 'taphold' ? undefined : { left: event.pageX, top: event.pageY },
                 items: [
                     // -------------------------------------------
                     // Sort by
@@ -1242,8 +1224,20 @@ async function UIDesktop(options) {
     //-----------------------------
     // GUI is ready to launch apps!
     //-----------------------------
-
+    window.dispatchEvent(new CustomEvent('desktop:ready'));
     globalThis.services.emit('gui:ready');
+
+    //--------------------------------------------------------
+    // Open the AI app
+    //--------------------------------------------------------    
+    if(window.user.email_confirmed){
+        launch_app({
+            name: 'ai',
+            window_options: {
+                is_panel: true,
+            }
+        })
+    }
 
     //--------------------------------------------------------------------------------------
     // Determine if an app was launched from URL
@@ -1395,104 +1389,6 @@ async function UIDesktop(options) {
                 })
             }
         })
-    }
-
-    //--------------------------------------------------------------------------------------
-    // Trying to view a user's public folder?
-    // i.e. https://puter.com/@<username>
-    //--------------------------------------------------------------------------------------
-    const url_paths = window.location.pathname.split('/').filter(element => element);
-    if (url_paths[0]?.startsWith('@')) {
-        const username = url_paths[0].substring(1);
-        let item_path = '/' + username + '/Public';
-        if ( url_paths.length > 1 ) {
-            item_path += '/' + url_paths.slice(1).join('/');
-        }
-
-        // GUARD: avoid invalid user directories
-        {
-            if (!username.match(/^[a-z0-9_]+$/i)) {
-                UIAlert({
-                    message: 'Invalid username.'
-                });
-                return;
-            }
-        }
-
-        const stat = await puter.fs.stat({path: item_path, consistency: 'eventual'});
-        
-        // TODO: DRY everything here with open_item. Unfortunately we can't
-        //       use open_item here because it's coupled with UI logic;
-        //       it requires a UIItem element and cannot operate on a
-        //       file path on its own.
-        if ( ! stat.is_dir ) {
-            if ( stat.associated_app ) {
-                launch_app({ name: stat.associated_app.name });
-                return;
-            }
-            
-            const ext_pref =
-                window.user_preferences[`default_apps${path.extname(item_path).toLowerCase()}`];
-            
-            if ( ext_pref ) {
-                launch_app({
-                    name: ext_pref,
-                    file_path: item_path,
-                });
-                return;
-            }
-            
-
-            const open_item_meta = await $.ajax({
-                url: window.api_origin + "/open_item",
-                type: 'POST',
-                contentType: "application/json",
-                data: JSON.stringify({
-                    path: item_path,
-                }),
-                headers: {
-                    "Authorization": "Bearer "+window.auth_token
-                },
-                statusCode: {
-                    401: function () {
-                        window.logout();
-                    },
-                },
-            });
-            const suggested_apps = open_item_meta?.suggested_apps ?? await window.suggest_apps_for_fsentry({
-                path: item_path
-            });
-
-            // Note: I'm not adding unzipping logic here. We'll wait until
-            //       we've refactored open_item so that Puter can have a
-            //       properly-reusable open function.
-            if ( suggested_apps.length !== 0 ) {
-                launch_app({
-                    name: suggested_apps[0].name, 
-                    token: open_item_meta.token,
-                    file_path: item_path,
-                    app_obj: suggested_apps[0],
-                    window_title: path.basename(item_path),
-                    maximized: options.maximized,
-                    file_signature: open_item_meta.signature,
-                });
-                return;
-            }
-
-            await UIAlert({
-                message: 'Cannot find an app to open this file; ' +
-                    'opening directory instead.'
-            });
-            item_path = item_path.split('/').slice(0, -1).join('/')
-        }
-
-        UIWindow({
-            path: item_path,
-            title: path.basename(item_path),
-            icon: await item_icon({ is_dir: true, path: item_path }),
-            is_dir: true,
-            app: 'explorer',
-        });
     }
 
     window.hide_toolbar = (animate = true) => {
@@ -1776,6 +1672,115 @@ async function UIDesktop(options) {
             }
         }
     });
+
+    //--------------------------------------------------------------------------------------
+    // Trying to view a user's public folder?
+    // i.e. https://puter.com/@<username>
+    //--------------------------------------------------------------------------------------
+    const url_paths = window.location.pathname.split('/').filter(element => element);
+    if (url_paths[0]?.startsWith('@')) {
+        const username = url_paths[0].substring(1);
+        let item_path = '/' + username + '/Public';
+        if ( url_paths.length > 1 ) {
+            item_path += '/' + url_paths.slice(1).join('/');
+        }
+
+        // GUARD: avoid invalid user directories
+        {
+            if (!username.match(/^[a-z0-9_]+$/i)) {
+                UIAlert({
+                    message: i18n('error_invalid_username')
+                });
+                return;
+            }
+        }
+
+        let stat;
+        try {
+          stat = await puter.fs.stat({path: item_path, consistency: 'eventual'});
+        } catch ( e ) {
+            window.history.replaceState(null, document.title, '/');
+            UIAlert({
+                message: i18n('error_user_or_path_not_found'),
+                type: 'error'
+            });
+            return;
+        }
+
+        // TODO: DRY everything here with open_item. Unfortunately we can't
+        //       use open_item here because it's coupled with UI logic;
+        //       it requires a UIItem element and cannot operate on a
+        //       file path on its own.
+        if ( ! stat.is_dir ) {
+            if ( stat.associated_app ) {
+                launch_app({ name: stat.associated_app.name });
+                return;
+            }
+            
+            const ext_pref =
+                window.user_preferences[`default_apps${path.extname(item_path).toLowerCase()}`];
+            
+            if ( ext_pref ) {
+                launch_app({
+                    name: ext_pref,
+                    file_path: item_path,
+                });
+                return;
+            }
+            
+
+            const open_item_meta = await $.ajax({
+                url: window.api_origin + "/open_item",
+                type: 'POST',
+                contentType: "application/json",
+                data: JSON.stringify({
+                    path: item_path,
+                }),
+                headers: {
+                    "Authorization": "Bearer "+window.auth_token
+                },
+                statusCode: {
+                    401: function () {
+                        window.logout();
+                    },
+                },
+            });
+            const suggested_apps = open_item_meta?.suggested_apps ?? await window.suggest_apps_for_fsentry({
+                path: item_path
+            });
+
+            // Note: I'm not adding unzipping logic here. We'll wait until
+            //       we've refactored open_item so that Puter can have a
+            //       properly-reusable open function.
+            if ( suggested_apps.length !== 0 ) {
+                launch_app({
+                    name: suggested_apps[0].name, 
+                    token: open_item_meta.token,
+                    file_path: item_path,
+                    app_obj: suggested_apps[0],
+                    window_title: path.basename(item_path),
+                    maximized: options.maximized,
+                    file_signature: open_item_meta.signature,
+                    custom_path: window.location.pathname,
+                });
+                return;
+            }
+
+            await UIAlert({
+                message: 'Cannot find an app to open this file; ' +
+                    'opening directory instead.'
+            });
+            item_path = item_path.split('/').slice(0, -1).join('/')
+        }
+
+        UIWindow({
+            path: item_path,
+            title: path.basename(item_path),
+            icon: await item_icon({ is_dir: true, path: item_path }),
+            is_dir: true,
+            app: 'explorer',
+        });
+    }
 }
 
 $(document).on('contextmenu taphold', '.taskbar', function (event) {
@@ -2363,5 +2368,32 @@ window.reset_window_size_and_position = (el_window) => {
         left: 'calc(50% - 340px)',
     });
 }
+
+// Modify the hide/show functions to use CSS rules that will apply to all icons, including future ones
+window.hideDesktopIcons = function () {
+    $('.desktop.item-container').addClass('desktop-icons-hidden');
+};
+
+window.showDesktopIcons = function () {
+    $('.desktop.item-container').removeClass('desktop-icons-hidden');
+};
+
+// Add this function to the global scope
+window.toggleDesktopIcons = function () {
+    window.desktop_icons_hidden = !window.desktop_icons_hidden;
+
+    if (window.desktop_icons_hidden) {
+        hideDesktopIcons();
+    } else {
+        showDesktopIcons();
+    }
+
+    // Save preference
+    puter.kv.set('desktop_icons_hidden', window.desktop_icons_hidden.toString());
+};
+
+$(document).on('click', '.btn-show-ai', function () {
+    $('.window[data-app="ai"]').makeWindowVisible();
+});
 
 export default UIDesktop;

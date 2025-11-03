@@ -1,4 +1,11 @@
 import io from '../../lib/socket.io/socket.io.esm.min.js';
+import * as utils from '../../lib/utils.js';
+import path from '../../lib/path.js';
+
+// Constants
+// 
+// The last valid time of the local cache.
+const LAST_VALID_TS = 'last_valid_ts';
 
 // Operations
 import copy from './operations/copy.js';
@@ -19,6 +26,7 @@ import { AdvancedBase } from '../../../../putility/index.js';
 import FSItem from '../FSItem.js';
 import deleteFSEntry from './operations/deleteFSEntry.js';
 import getReadURL from './operations/getReadUrl.js';
+
 
 export class PuterJSFileSystemModule extends AdvancedBase {
 
@@ -67,6 +75,7 @@ export class PuterJSFileSystemModule extends AdvancedBase {
         this.APIOrigin = context.APIOrigin;
         this.appID = context.appID;
         this.context = context;
+        this.cacheUpdateTimer = null;
         // Connect socket.
         this.initializeSocket();
 
@@ -103,21 +112,44 @@ export class PuterJSFileSystemModule extends AdvancedBase {
         });
 
         this.bindSocketEvents();
-
     }
 
     bindSocketEvents() {
-        this.socket.on('item.added', (item) => {
-            // todo: NAIVE PURGE
-            puter._cache.flushall();
-        });
+        // this.socket.on('cache.updated', (msg) => {
+        //     // check original_client_socket_id and if it matches this.socket.id, don't post update
+        //     if (msg.original_client_socket_id !== this.socket.id) {
+        //         this.invalidateCache();
+        //     }
+        // });
+
         this.socket.on('item.renamed', (item) => {
-            // todo: NAIVE PURGE
             puter._cache.flushall();
+            console.log('Flushed cache for item.renamed');
         });
-        this.socket.on('item.moved', (item) => {
-            // todo: NAIVE PURGE
+
+        this.socket.on('item.removed', (item) => {
+            // check original_client_socket_id and if it matches this.socket.id, don't invalidate cache
             puter._cache.flushall();
+            console.log('Flushed cache for item.removed');
+        });
+
+        this.socket.on('item.added', (item) => {
+            // remove readdir cache for parent
+            puter._cache.del('readdir:' + path.dirname(item.path));
+            console.log('deleted cache for readdir:' + path.dirname(item.path));
+            // remove item cache for parent directory
+            puter._cache.del('item:' + path.dirname(item.path));
+            console.log('deleted cache for item:' + path.dirname(item.path));
+        });
+
+        this.socket.on('item.updated', (item) => {
+            puter._cache.flushall();
+            console.log('Flushed cache for item.updated');
+        });
+
+        this.socket.on('item.moved', (item) => {
+            puter._cache.flushall();
+            console.log('Flushed cache for item.moved');
         });
 
         this.socket.on('connect', () => {
@@ -132,10 +164,6 @@ export class PuterJSFileSystemModule extends AdvancedBase {
             {
                 console.log('FileSystem Socket: Disconnected');
             }
-
-            // todo: NAIVE PURGE
-            // purge cache on disconnect since we may have become out of sync
-            puter._cache.flushall();
         });
 
         this.socket.on('reconnect', (attempt) => {
@@ -183,6 +211,14 @@ export class PuterJSFileSystemModule extends AdvancedBase {
      */
     setAuthToken(authToken) {
         this.authToken = authToken;
+
+        // Check cache timestamp and purge if needed (only in GUI environment)
+        if (this.context.env === 'gui') {
+            this.checkCacheAndPurge();
+            // Start background task to update LAST_VALID_TS every 1 second
+            this.startCacheUpdateTimer();
+        }
+
         // reset socket
         this.initializeSocket();
     }
@@ -198,5 +234,101 @@ export class PuterJSFileSystemModule extends AdvancedBase {
         this.APIOrigin = APIOrigin;
         // reset socket
         this.initializeSocket();
+    }
+
+    /**
+     * The cache-related actions after local and remote updates.
+     *
+     * @memberof PuterJSFileSystemModule
+     * @returns {void}
+     */
+    invalidateCache() {
+        // Action: Update last valid time
+        // Set to 0, which means the cache is not up to date.
+        localStorage.setItem(LAST_VALID_TS, '0');
+        puter._cache.flushall();
+    }
+
+    /**
+     * Calls the cache API to get the last change timestamp from the server.
+     *
+     * @memberof PuterJSFileSystemModule
+     * @returns {Promise<number>} The timestamp from the server
+     */
+    async getCacheTimestamp() {
+        return new Promise((resolve, reject) => {
+            const xhr = utils.initXhr('/cache/last-change-timestamp', this.APIOrigin, this.authToken, 'get', 'application/json');
+            
+            // set up event handlers for load and error events
+            utils.setupXhrEventHandlers(xhr, undefined, undefined, async (result) => {
+                try {
+                    const response = typeof result === 'string' ? JSON.parse(result) : result;
+                    resolve(response.timestamp || Date.now());
+                } catch (e) {
+                    reject(new Error('Failed to parse response'));
+                }
+            }, reject);
+
+            xhr.send();
+        });
+    }
+
+    /**
+     * Checks cache timestamp and purges cache if needed.
+     * Only runs in GUI environment.
+     *
+     * @memberof PuterJSFileSystemModule
+     * @returns {void}
+     */
+    async checkCacheAndPurge() {
+        try {
+            const serverTimestamp = await this.getCacheTimestamp();
+            const localValidTs = parseInt(localStorage.getItem(LAST_VALID_TS)) || 0;
+            
+            if (serverTimestamp - localValidTs > 2000) {
+                console.log('Cache is not up to date, purging cache');
+                // Server has newer data, purge local cache
+                puter._cache.flushall();
+                localStorage.setItem(LAST_VALID_TS, '0');
+            }
+        } catch (error) {
+            // If we can't get the server timestamp, silently fail
+            // This ensures the socket initialization doesn't break
+            console.error('Error checking cache timestamp:', error);
+        }
+    }
+
+    /**
+     * Starts the background task to update LAST_VALID_TS every 1 second.
+     * Only runs in GUI environment.
+     *
+     * @memberof PuterJSFileSystemModule
+     * @returns {void}
+     */
+    startCacheUpdateTimer() {
+        if (this.context.env !== 'gui') {
+            return;
+        }
+
+        // Clear any existing timer
+        // this.stopCacheUpdateTimer();
+
+        // Start new timer
+        this.cacheUpdateTimer = setInterval(() => {
+            localStorage.setItem(LAST_VALID_TS, Date.now().toString());
+        }, 1000);
+    }
+
+    /**
+     * Stops the background cache update timer.
+     *
+     * @memberof PuterJSFileSystemModule
+     * @returns {void}
+     */
+    stopCacheUpdateTimer() {
+        if (this.cacheUpdateTimer) {
+            clearInterval(this.cacheUpdateTimer);
+            this.cacheUpdateTimer = null;
+        }
     }
 }
